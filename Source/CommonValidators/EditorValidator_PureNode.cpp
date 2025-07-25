@@ -100,10 +100,18 @@ EDataValidationResult ValidateGraph(const UEdGraph* Graph, FDataValidationContex
 				continue;
 			}
 
+			const auto NodeMenuTitle = PureNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle);
+			//if (Node->IsA<UK2Node_PropertyAccess>()) // kirsten: it's a private type, I don't want to diverge too much
+			if (NodeMenuTitle.ToString().Contains("Property Access"))
+			{
+				// kirsten: ignore breakstructs
+				continue;
+			}
+
 			if (IsArrayOutputUsedAsMacroInput(PureNode))
 			{
-				FText output = FText::Join(FText::FromString(" "), PureNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle), FText::FromString(TEXT("We do not allow pure node array outputs as an input for macros.")));
-				Context.AddError(output);
+				FText Output = FText::Join(FText::FromString(" "), NodeMenuTitle, FText::FromString(TEXT("We do not allow pure node array outputs as an input for macros.")));
+				Context.AddError(Output);
 				return EDataValidationResult::Invalid;
 			}
 
@@ -116,8 +124,8 @@ EDataValidationResult ValidateGraph(const UEdGraph* Graph, FDataValidationContex
 
 			if (IsMultiPinPureNode(PureNode))
 			{
-				FText output = FText::Join(FText::FromString(" "), PureNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle), FText::FromString(TEXT("MultiPin Pure Nodes actually get called for each connected pin output.")));
-				Context.AddError(output);
+				FText Output = FText::Join(FText::FromString(" "), NodeMenuTitle, FText::FromString(TEXT("MultiPin Pure Nodes actually get called for each connected pin output.")));
+				Context.AddError(Output);
 				return EDataValidationResult::Invalid;
 			}
 		}
