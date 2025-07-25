@@ -5,132 +5,17 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraphSchema_K2.h"
-#include "K2Node.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_Knot.h"
-#include "K2Node_Self.h"
-#include "K2Node_VariableGet.h"
-#include "K2Node_CreateDelegate.h"
-#include "K2Node_MacroInstance.h"
-#include "K2Node_GetSubsystem.h"
 #include "K2Node_BreakStruct.h"
+#include "K2Node_Variable.h"
+#include "CommonValidatorsStatics.h"
+
+#include "K2Node.h"
+
 
 bool UEditorValidator_PureNode::CanValidateAsset_Implementation(const FAssetData& InAssetData, UObject* InObject, FDataValidationContext& InContext) const
 {
 	return InObject && InObject->IsA<UBlueprint>();
-}
-
-// WAYFINDER_CHANGE: kirsten@wayfindergames.se, Kauri-XXX - BEGIN: adapt pure node validation to our needs
-bool IsMultiPinPureNode(const UK2Node* PureNode)
-{
-	int PinConnectionCount = 0;
-	for (const UEdGraphPin* Pin : PureNode->Pins)
-	{
-		//if we're an output pin and we have a connection in the graph - this counts.
-		if (Pin->Direction == EGPD_Output && Pin->LinkedTo.Num() > 1)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool IsArrayOutputUsedAsMacroInput(const UK2Node* PureNode)
-{
-	int PinConnectionCount = 0;
-	for (const UEdGraphPin* Pin : PureNode->Pins)
-	{
-		//if we're an output pin and we have a connection in the graph - this counts.
-		if (Pin->Direction == EGPD_Output && Pin->PinType.IsContainer())
-		{
-			for (auto Out : Pin->LinkedTo)
-			{
-				if (Cast<UK2Node_MacroInstance>(Out->GetOwningNode()))
-				{
-					return true;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-EDataValidationResult ValidateGraph(const UEdGraph* Graph, FDataValidationContext& Context)
-{
-	for (const UEdGraphNode* Node : Graph->Nodes)
-	{
-		const UK2Node* PureNode = Cast<UK2Node>(Node);
-		if (PureNode && PureNode->IsNodePure())
-		{
-			if (Node->IsA<UK2Node_VariableGet>())
-			{
-				// kirsten: ignore getters
-				continue;
-			}
-
-			if (Node->IsA<UK2Node_Self>())
-			{
-				// kirsten: ignore self
-				continue;
-			}
-
-			if (Node->IsA<UK2Node_Knot>())
-			{
-				// kirsten: ignore reroute nodes
-				continue;
-			}
-
-			if (Node->IsA<UK2Node_CreateDelegate>())
-			{
-				// kirsten: ignore events
-				continue;
-			}
-
-			if (Node->IsA<UK2Node_GetSubsystem>())
-			{
-				// kirsten: ignore subsystems
-				continue;
-			}
-
-			if (Node->IsA<UK2Node_BreakStruct>())
-			{
-				// kirsten: ignore breakstructs
-				continue;
-			}
-
-			const auto NodeMenuTitle = PureNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle);
-			//if (Node->IsA<UK2Node_PropertyAccess>()) // kirsten: it's a private type, I don't want to diverge too much
-			if (NodeMenuTitle.ToString().Contains("Property Access"))
-			{
-				// kirsten: ignore breakstructs
-				continue;
-			}
-
-			if (IsArrayOutputUsedAsMacroInput(PureNode))
-			{
-				FText Output = FText::Join(FText::FromString(" "), NodeMenuTitle, FText::FromString(TEXT("We do not allow pure node array outputs as an input for macros.")));
-				Context.AddError(Output);
-				return EDataValidationResult::Invalid;
-			}
-
-			auto CallFunctionNode = Cast<UK2Node_CallFunction>(Node);
-			if (CallFunctionNode && CallFunctionNode->GetTargetFunction() && CallFunctionNode->GetTargetFunction()->HasAnyFunctionFlags(FUNC_Const | FUNC_Static))
-			{
-				// kirsten: ignore const functions for now
-				continue;
-			}
-
-			if (IsMultiPinPureNode(PureNode))
-			{
-				FText Output = FText::Join(FText::FromString(" "), NodeMenuTitle, FText::FromString(TEXT("MultiPin Pure Nodes actually get called for each connected pin output.")));
-				Context.AddError(Output);
-				return EDataValidationResult::Invalid;
-			}
-		}
-	}
-	return EDataValidationResult::Valid;
 }
 
 EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementation(const FAssetData& InAssetData, UObject* InAsset, FDataValidationContext& Context)
@@ -138,22 +23,93 @@ EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementat
 	UBlueprint* Blueprint = Cast<UBlueprint>(InAsset);
 	if (!Blueprint) return EDataValidationResult::NotValidated;
 
+	bool bHasMultiPinPureNode = false;
+
 	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
-		if (ValidateGraph(Graph, Context) == EDataValidationResult::Invalid)
+		for (UEdGraphNode* Node : Graph->Nodes)
 		{
-			return EDataValidationResult::Invalid;
+			UK2Node* PureNode = Cast<UK2Node>(Node);
+			// If is a "UK2Node_BreakStruct" continue, these can't take 'show exec pins' anyhow
+			if (Node->IsA(UK2Node_BreakStruct::StaticClass())) continue;
+			// Questionable, but we don't want to show warnings for variable nodes, although they can take show exec pins and might have 'split pins'
+			if (Node->IsA(UK2Node_Variable::StaticClass())) continue;
+			// We should skip break/make nodes, for example, GameplayCueParameters.
+			// This is pure but its native break/make. So let's skip them, they are safe --KaosSpectrum
+			if (UK2Node_CallFunction* CallFunction = Cast<UK2Node_CallFunction>(Node))
+			{
+				UFunction* TargetFunc = CallFunction->GetTargetFunction();
+				if (TargetFunc && (TargetFunc->HasMetaData(TEXT("NativeBreakFunc")) || TargetFunc->HasMetaData(TEXT("NativeMakeFunc"))))
+				{
+					continue;
+				}
+			}
+			if (PureNode && PureNode->IsNodePure())
+			{
+				if (IsMultiPinPureNode(PureNode) && !IsWhitelistedPureNode(PureNode))
+				{
+					FText output = FText::Join(FText::FromString(" "), PureNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle), FText::FromString(" - "), FText::FromString(TEXT("MultiPin Pure Nodes actually get called for each connected pin output.")));
+
+					PureNode->ErrorMsg = output.ToString();
+					PureNode->ErrorType = EMessageSeverity::Warning;
+					PureNode->bHasCompilerMessage = true;
+					
+					// Create tokenized message with action using UCommonValidatorsStatics::OpenBlueprintAndFocusNode
+					TSharedRef<FTokenizedMessage> TokenizedMessage = FTokenizedMessage::Create(EMessageSeverity::Warning, output);
+					TokenizedMessage->AddToken(FActionToken::Create(
+						FText::FromString(TEXT("Open Blueprint and Focus Node")),
+						FText::FromString(TEXT("Open Blueprint and Focus Node")),
+						FOnActionTokenExecuted::CreateLambda([Blueprint, Graph, PureNode]()
+							{
+								UCommonValidatorsStatics::OpenBlueprintAndFocusNode(Blueprint, Graph, PureNode);
+							}),
+						false
+					));
+
+					Context.AddMessage(TokenizedMessage);
+
+					bHasMultiPinPureNode = true;
+					Graph->NotifyNodeChanged(Node);
+				}
+			}
 		}
 	}
-
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	if (bHasMultiPinPureNode)
 	{
-		if (ValidateGraph(Graph, Context) == EDataValidationResult::Invalid)
-		{
-			return EDataValidationResult::Invalid;
-		}
+		return EDataValidationResult::Invalid;
 	}
 
 	return EDataValidationResult::Valid;
 }
-// WAYFINDER_CHANGE: kirsten@wayfindergames.se - END
+
+bool UEditorValidator_PureNode::IsMultiPinPureNode(UK2Node* PureNode)
+{
+	int PinConnectionCount = 0;
+	for (UEdGraphPin* Pin : PureNode->Pins)
+	{
+		// If we're an output pin and we have a connection in the graph - this counts.
+		if (Pin->Direction == EGPD_Output && Pin->LinkedTo.Num() > 0)
+		{
+			PinConnectionCount++;
+		}
+	}
+	
+	return PinConnectionCount > 1;
+}
+
+bool UEditorValidator_PureNode::IsWhitelistedPureNode(UK2Node* PureNode)
+{
+	static const TArray<UClass*> WhitelistedTypes = {
+		UK2Node_BreakStruct::StaticClass()
+		// Add here any other classes that should be whitelisted
+	};
+
+	for (UClass* WhitelistedClass : WhitelistedTypes)
+	{
+		if (PureNode->IsA(WhitelistedClass))
+		{
+			return true;
+		}
+	}
+	return false;
+}
