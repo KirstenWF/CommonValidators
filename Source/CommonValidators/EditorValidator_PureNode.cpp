@@ -200,6 +200,79 @@ namespace UE::Internal::PureNodeValidatorHelpers
 
         return false;
     }
+
+	bool ValidateGraph(const FAssetData& InAssetData, UBlueprint* Blueprint, UEdGraph* Graph, FDataValidationContext& Context)
+	{
+		bool bFoundBadNode = false;
+		bool bShouldError = GetDefault<UCommonValidatorsDeveloperSettings>()->bErrorOnPureNodeMultiExec;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node->IsA<UK2Node_BreakStruct>() || Node->IsA<UK2Node_Variable>())
+			{
+				continue;
+			}
+
+			UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+			if (CallNode == nullptr)
+			{
+				continue;
+			}
+
+			if (UFunction* TargetFunc = CallNode->GetTargetFunction())
+			{
+				if (TargetFunc->HasMetaData(TEXT("NativeBreakFunc")) ||
+					TargetFunc->HasMetaData(TEXT("NativeMakeFunc")))
+				{
+					continue;
+				}
+			}
+
+			if (!CallNode->IsNodePure() || IsHarmlessPureNode(CallNode))
+			{
+				continue;
+			}
+
+			if (WillPureNodeFireMultipleTimes(CallNode, Graph))
+			{
+				const FText Title = CallNode->GetNodeTitle(ENodeTitleType::MenuTitle);
+				const FText Message = FText::Format(
+					NSLOCTEXT("PureNodeValidator", "MultiCallWarning",
+						"{0} will execute more than once. Convert to exec or avoid using across multiple exec nodes."),
+					Title
+				);
+				CallNode->ErrorMsg = Message.ToString();
+				CallNode->ErrorType = bShouldError ? EMessageSeverity::Error : EMessageSeverity::Warning;
+				CallNode->bHasCompilerMessage = true;
+
+				TSharedRef<FTokenizedMessage> TokenMessage =
+					FTokenizedMessage::Create(EMessageSeverity::Warning, Message);
+
+				TokenMessage->AddToken(
+					FActionToken::Create(
+						NSLOCTEXT("PureNodeValidator", "OpenNode", "Focus Node"),
+						NSLOCTEXT("PureNodeValidator", "OpenNodeTooltip", "Open this node in the Blueprint Editor"),
+						FOnActionTokenExecuted::CreateLambda([Blueprint, Graph, CallNode]()
+							{
+								UCommonValidatorsStatics::OpenBlueprintAndFocusNode(Blueprint, Graph, CallNode);
+							}),
+						/*bEnabled=*/false
+					)
+				);
+
+				Context.AddMessage(TokenMessage);
+				Graph->NotifyNodeChanged(Node);
+				bFoundBadNode = true;
+			}
+		}
+
+		if (bShouldError && bFoundBadNode)
+		{
+			return false;
+		}
+
+		return true;
+	}
 } // namespace UE::Internal::PureNodeValidatorHelpers
 
 
@@ -212,84 +285,26 @@ bool UEditorValidator_PureNode::CanValidateAsset_Implementation(
     return bIsValidatorEnabled && (InObject != nullptr) && InObject->IsA<UBlueprint>();
 }
 
-
 EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementation(const FAssetData& InAssetData, UObject* InAsset, FDataValidationContext& Context)
 {
-    UBlueprint* Blueprint = Cast<UBlueprint>(InAsset);
-    if (Blueprint == nullptr)
-    {
-        return EDataValidationResult::NotValidated;
-    }
-	bool bFoundBadNode = false;
-	bool bShouldError = GetDefault<UCommonValidatorsDeveloperSettings>()->bErrorOnPureNodeMultiExec;
+	UBlueprint* Blueprint = Cast<UBlueprint>(InAsset);
+	if (!Blueprint) return EDataValidationResult::NotValidated;
 
-    for (UEdGraph* Graph : Blueprint->UbergraphPages)
-    {
-        for (UEdGraphNode* Node : Graph->Nodes)
-        {
-            if (Node->IsA<UK2Node_BreakStruct>() || Node->IsA<UK2Node_Variable>())
-            {
-                continue;
-            }
-
-            UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
-            if (CallNode == nullptr)
-            {
-                continue;
-            }
-
-            if (UFunction* TargetFunc = CallNode->GetTargetFunction())
-            {
-                if (TargetFunc->HasMetaData(TEXT("NativeBreakFunc")) ||
-                    TargetFunc->HasMetaData(TEXT("NativeMakeFunc")))
-                {
-                    continue;
-                }
-            }
-
-            if (!CallNode->IsNodePure() || UE::Internal::PureNodeValidatorHelpers::IsHarmlessPureNode(CallNode))
-            {
-                continue;
-            }
-
-            if (UE::Internal::PureNodeValidatorHelpers::WillPureNodeFireMultipleTimes(CallNode, Graph))
-            {
-                const FText Title = CallNode->GetNodeTitle(ENodeTitleType::MenuTitle);
-                const FText Message = FText::Format(
-                    NSLOCTEXT("PureNodeValidator", "MultiCallWarning",
-                              "{0} will execute more than once. Convert to exec or avoid using across multiple exec nodes."),
-                    Title
-                );
-                CallNode->ErrorMsg            = Message.ToString();
-                CallNode->ErrorType           = bShouldError ? EMessageSeverity::Error : EMessageSeverity::Warning;
-                CallNode->bHasCompilerMessage = true;
-
-                TSharedRef<FTokenizedMessage> TokenMessage =
-                    FTokenizedMessage::Create(EMessageSeverity::Warning, Message);
-
-                TokenMessage->AddToken(
-                    FActionToken::Create(
-                        NSLOCTEXT("PureNodeValidator", "OpenNode", "Focus Node"),
-                        NSLOCTEXT("PureNodeValidator", "OpenNodeTooltip", "Open this node in the Blueprint Editor"),
-                        FOnActionTokenExecuted::CreateLambda([Blueprint, Graph, CallNode]()
-                        {
-                            UCommonValidatorsStatics::OpenBlueprintAndFocusNode(Blueprint, Graph, CallNode);
-                        }),
-                        /*bEnabled=*/false
-                    )
-                );
-
-                Context.AddMessage(TokenMessage);
-                Graph->NotifyNodeChanged(Node);
-				bFoundBadNode = true;
-            }
-        }
-    }
-
-	if (bShouldError && bFoundBadNode)
+	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
-		return EDataValidationResult::Invalid;
+		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context))
+		{
+			return EDataValidationResult::Invalid;
+		}
 	}
-	
-    return EDataValidationResult::Valid;
+
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context))
+		{
+			return EDataValidationResult::Invalid;
+		}
+	}
+
+	return EDataValidationResult::Valid;
 }
