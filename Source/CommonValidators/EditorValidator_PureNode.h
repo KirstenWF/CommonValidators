@@ -5,7 +5,7 @@
 #include "EditorValidator_PureNode.generated.h"
 
 /**
- * 
+ *
  */
 UCLASS()
 class COMMONVALIDATORS_API UEditorValidator_PureNode : public UEditorValidatorBase
