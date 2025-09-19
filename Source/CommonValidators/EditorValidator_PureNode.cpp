@@ -334,7 +334,7 @@ EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementat
 
 	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
-		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context))
+		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context) == false)
 		{
 			return EDataValidationResult::Invalid;
 		}
@@ -342,7 +342,7 @@ EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementat
 
 	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
 	{
-		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context))
+		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context) == false)
 		{
 			return EDataValidationResult::Invalid;
 		}
