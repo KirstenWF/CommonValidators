@@ -222,12 +222,31 @@ namespace UE::Internal::PureNodeValidatorHelpers
 
 		return false;
 	}
+} // namespace UE::Internal::PureNodeValidatorHelpers
 
-	bool ValidateGraph(const FAssetData& InAssetData, UBlueprint* Blueprint, UEdGraph* Graph, FDataValidationContext& Context)
+
+bool UEditorValidator_PureNode::CanValidateAsset_Implementation(
+    const FAssetData& InAssetData,
+    UObject* InObject,
+    FDataValidationContext& InContext) const
+{
+	bool bIsValidatorEnabled = GetDefault<UCommonValidatorsDeveloperSettings>()->bEnablePureNodeMultiExecValidator;
+    return bIsValidatorEnabled && (InObject != nullptr) && InObject->IsA<UBlueprint>();
+}
+
+EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementation(const FAssetData& InAssetData, UObject* InAsset, FDataValidationContext& Context)
+{
+	UBlueprint* Blueprint = Cast<UBlueprint>(InAsset);
+	if (!Blueprint) return EDataValidationResult::NotValidated;
+
+	EDataValidationResult DataValidationResult = EDataValidationResult::Valid;
+
+	TArray<UEdGraph*> AllGraphs;
+	AllGraphs.Append(Blueprint->FunctionGraphs);
+	AllGraphs.Append(Blueprint->UbergraphPages);
+
+	for (UEdGraph* Graph : AllGraphs)
 	{
-		bool bFoundBadNode = false;
-		bool bShouldError = GetDefault<UCommonValidatorsDeveloperSettings>()->bErrorOnPureNodeMultiExec;
-
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (Node->IsA<UK2Node_BreakStruct>() || Node->IsA<UK2Node_Variable>())
@@ -235,7 +254,7 @@ namespace UE::Internal::PureNodeValidatorHelpers
 				continue;
 			}
 
-			if (IsWhitelistedPureNode(Node))
+			if (UE::Internal::PureNodeValidatorHelpers::IsWhitelistedPureNode(Node))
 			{
 				continue;
 			}
@@ -254,18 +273,18 @@ namespace UE::Internal::PureNodeValidatorHelpers
 					continue;
 				}
 			}
-			
-			if (!CallNode->IsNodePure() || IsHarmlessPureNode(CallNode) || IsStaticOrConstPureNode(CallNode))
+
+			if (!CallNode->IsNodePure() || UE::Internal::PureNodeValidatorHelpers::IsHarmlessPureNode(CallNode) || UE::Internal::PureNodeValidatorHelpers::IsStaticOrConstPureNode(CallNode))
 			{
 				continue;
 			}
 
-			bool bIsArrayOutputUsedAsMacroInput = IsArrayOutputUsedAsMacroInput(Node);
-			if (bIsArrayOutputUsedAsMacroInput || WillPureNodeFireMultipleTimes(CallNode, Graph))
+			bool bIsArrayOutputUsedAsMacroInput = UE::Internal::PureNodeValidatorHelpers::IsArrayOutputUsedAsMacroInput(Node);
+			if (bIsArrayOutputUsedAsMacroInput || UE::Internal::PureNodeValidatorHelpers::WillPureNodeFireMultipleTimes(CallNode, Graph))
 			{
 				const FText Title = CallNode->GetNodeTitle(ENodeTitleType::Type::MenuTitle);
-				const FText ErrorMessage = bIsArrayOutputUsedAsMacroInput ? 
-					FText::FromString(TEXT("pure array node is used as input for macros. Please cache the array first, because calling macro function.")) : 
+				const FText ErrorMessage = bIsArrayOutputUsedAsMacroInput ?
+					FText::FromString(TEXT("pure array node is used as input for macros. Please cache the array first, because calling macro function.")) :
 					FText::FromString(TEXT("will execute more than once. Convert to exec or avoid using across multiple exec nodes."));
 
 				const FText Message = IsRunningCommandlet() ?
@@ -275,16 +294,16 @@ namespace UE::Internal::PureNodeValidatorHelpers
 						FText::FromName(InAssetData.AssetName),
 						Title,
 						ErrorMessage
-					) : 
+					) :
 					FText::Format(
 						NSLOCTEXT("PureNodeValidator", "MultiCallWarning",
 							"{0} {1}."),
 						Title,
 						ErrorMessage
-				);
+					);
 
 				CallNode->ErrorMsg = Message.ToString();
-				CallNode->ErrorType = bShouldError ? EMessageSeverity::Error : EMessageSeverity::Warning;
+				CallNode->ErrorType = GetDefault<UCommonValidatorsDeveloperSettings>()->bErrorOnPureNodeMultiExec ? EMessageSeverity::Error : EMessageSeverity::Warning;
 				CallNode->bHasCompilerMessage = true;
 
 				TSharedRef<FTokenizedMessage> TokenMessage =
@@ -304,49 +323,9 @@ namespace UE::Internal::PureNodeValidatorHelpers
 
 				Context.AddMessage(TokenMessage);
 				Graph->NotifyNodeChanged(Node);
-				bFoundBadNode = true;
 			}
 		}
-
-		if (bShouldError && bFoundBadNode)
-		{
-			return false;
-		}
-
-		return true;
-	}
-} // namespace UE::Internal::PureNodeValidatorHelpers
-
-
-bool UEditorValidator_PureNode::CanValidateAsset_Implementation(
-    const FAssetData& InAssetData,
-    UObject* InObject,
-    FDataValidationContext& InContext) const
-{
-	bool bIsValidatorEnabled = GetDefault<UCommonValidatorsDeveloperSettings>()->bEnablePureNodeMultiExecValidator;
-    return bIsValidatorEnabled && (InObject != nullptr) && InObject->IsA<UBlueprint>();
-}
-
-EDataValidationResult UEditorValidator_PureNode::ValidateLoadedAsset_Implementation(const FAssetData& InAssetData, UObject* InAsset, FDataValidationContext& Context)
-{
-	UBlueprint* Blueprint = Cast<UBlueprint>(InAsset);
-	if (!Blueprint) return EDataValidationResult::NotValidated;
-
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
-	{
-		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context) == false)
-		{
-			return EDataValidationResult::Invalid;
-		}
 	}
 
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		if (UE::Internal::PureNodeValidatorHelpers::ValidateGraph(InAssetData, Blueprint, Graph, Context) == false)
-		{
-			return EDataValidationResult::Invalid;
-		}
-	}
-
-	return EDataValidationResult::Valid;
+	return DataValidationResult;
 }
